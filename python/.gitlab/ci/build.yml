@@ -1,0 +1,47 @@
+#########
+# RULES #
+#########
+
+.main_build_ci_rule:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - Dockerfile
+        - requirements.txt
+      when: manual
+    - when: never
+
+###########
+# SCRIPTS #
+###########
+
+.login-to-docker-registry: &login-to-docker-registry
+  - echo $REGISTRY_TOKEN | docker login -u $REGISTRY_LOGIN $DOCKER_REGISTRY_URL --password-stdin
+
+.build-docker-image: &build-docker-image
+  - docker build . -t $DOCKER_REGISTRY_URL/$CI_PROJECT_PATH/$PYTHON_PROJECT_DOCKER_IMAGE_NAME:latest
+
+.push-docker-image-to-dregistry: &push-docker-image-to-dregistry
+  - docker push $CI_SERVER_HOST:5050/$CI_PROJECT_PATH/$PYTHON_PROJECT_DOCKER_IMAGE_NAME:latest
+
+.delete-docker-image-on-gitlab-runner: &delete-docker-image-on-gitlab-runner
+  - docker rmi $CI_SERVER_HOST:5050/$CI_PROJECT_PATH/$PYTHON_PROJECT_DOCKER_IMAGE_NAME:latest
+
+########
+# JOBS #
+########
+
+building-python-project:
+  image: $DOCKER_IMAGE_DIND
+  stage: build
+  tags:
+    - build
+  rules:
+    - !reference [ .main_build_ci_rule, rules ]
+  variables:
+    PYTHON_PROJECT_DOCKER_IMAGE_NAME: "python-project"
+  script:
+    - *login-to-docker-registry
+    - *build-docker-image
+    - *push-docker-image-to-dregistry
+    - *delete-docker-image-on-gitlab-runner

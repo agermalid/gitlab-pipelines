@@ -1,0 +1,93 @@
+#########
+# RULES #
+#########
+
+.qa_unit_testing_ci_rule:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
+    - when: never
+
+.main_unit_testing_ci_rule:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $SCHEDULED_TASK_NAME == "deploy_main_at_2_am"'
+    - when: never
+
+###########
+# SCRIPTS #
+###########
+
+.check-version: &check-version
+  - cat version
+
+.create-nuget-config: &create-nuget-config
+  - |
+    cat << EOT > "$CI_PROJECT_DIR/NuGet.Config" 
+    <?xml version="1.0" encoding="utf-8"?>
+    <configuration>
+      <packageSources>
+        <clear />
+        <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
+        <add key="$CI_SERVER_HOST" value="$CI_SERVER_URL/api/v4/projects/$CI_PROJECT_ID/packages/nuget/index.json" />
+      </packageSources>
+      <packageSourceCredentials>
+        <$CI_SERVER_HOST>
+          <add key="Username" value="$REGISTRY_LOGIN" />
+          <add key="cleartextpassword" value="$REGISTRY_TOKEN" />
+        </$CI_SERVER_HOST>
+      </packageSourceCredentials>
+    </configuration>
+    EOT
+
+.unit-testing: &unit-testing
+  - >
+    dotnet test
+    $CI_PROJECT_DIR/dotnet.sln
+    --filter FullyQualifiedName\\!~IntegrationTests
+    --configuration $CONFIGURATION
+    --verbosity minimal
+
+########
+# JOBS #
+########
+
+unit-testing-dotnet-qa:
+  image: $DOCKER_IMAGE_DOTNET_SDK
+  stage: unit-testing
+  tags:
+    - unit-testing
+  needs:
+    - job: version-for-dotnet-qa
+      optional: false
+  rules:
+    - !reference [ .qa_unit_testing_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    CONFIGURATION: Debug
+  script:
+    - *check-version
+    - *create-nuget-config
+    - *unit-testing
+
+unit-testing-dotnet-main:
+  image: $DOCKER_IMAGE_DOTNET_SDK
+  stage: unit-testing
+  tags:
+    - unit-testing
+  needs:
+    - job: version-for-dotnet-main
+      optional: false
+  rules:
+    - !reference [ .main_unit_testing_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    CONFIGURATION: ReleaseByLinks
+  script:
+    - *check-version
+    - *create-nuget-config
+    - *unit-testing

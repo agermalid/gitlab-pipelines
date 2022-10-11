@@ -1,0 +1,14 @@
+.DS_Store
+.jest-*
+.log
+.vscode
+.idea
+# Unit test / coverage reports
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+.__pycache__/
+.pytest_cache/
+.*/.__pycache__

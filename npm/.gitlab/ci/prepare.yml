@@ -1,0 +1,43 @@
+#########
+# RULES #
+#########
+
+.library_prepare_ci_rule:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master" && $CI_COMMIT_MESSAGE =~ /chore/ || $CI_COMMIT_MESSAGE =~ /ci-patch/ || $CI_COMMIT_MESSAGE =~ /ci-minor/ || $CI_COMMIT_MESSAGE =~ /ci-major/'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "master"'
+    - when: never
+
+###########
+# SCRIPTS #
+###########
+
+.get-version: &get-version
+    - git describe --always --long | sed 's/refs\/tags\///' > $CI_PROJECT_DIR/version
+
+.check-version: &check-version
+    - cat $CI_PROJECT_DIR/version
+
+########
+# JOBS #
+########
+
+prepare-version-file-for-npm-project-library:
+  image:
+    name: $DOCKER_IMAGE_GIT_ALPINE
+    entrypoint: [""]
+  stage: prepare
+  tags:
+    - prepare
+  rules:
+    - !reference [ .library_prepare_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    GIT_DEPTH: "300"
+  script:
+    - *get-version
+    - *check-version

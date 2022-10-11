@@ -1,0 +1,68 @@
+#########
+# RULES #
+#########
+
+.qa_prepare_ci_rule:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
+    - when: never
+
+.main_prepare_ci_rule:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $SCHEDULED_TASK_NAME == "deploy_main_at_2_am"'
+    - when: never
+
+###########
+# SCRIPTS #
+###########
+
+.get-version: &get-version
+  - apk add --no-cache tzdata
+  - cp /usr/share/zoneinfo/Asia/Almaty /etc/localtime
+  - date
+  - echo "v$(date '+%Y.%m')-$(git rev-parse --short HEAD)" > version
+
+.check-version: &check-version
+  - cat version
+
+########
+# JOBS #
+########
+
+version-for-dotnet-dotnet-qa:
+  image:
+    name: $DOCKER_IMAGE_GIT_ALPINE
+    entrypoint: [""]
+  stage: prepare
+  tags:
+    - prepare
+  rules:
+    - !reference [ .qa_prepare_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    GIT_DEPTH: "300"
+  script:
+    - *get-version
+    - *check-version
+
+version-for-dotnet-dotnet-main:
+  image:
+    name: $DOCKER_IMAGE_GIT_ALPINE
+    entrypoint: [""]
+  stage: prepare
+  tags:
+    - prepare
+  rules:
+    - !reference [ .main_prepare_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    GIT_DEPTH: "300"
+  script:
+    - *get-version
+    - *check-version

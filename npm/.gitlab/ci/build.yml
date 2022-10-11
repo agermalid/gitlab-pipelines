@@ -1,0 +1,174 @@
+#########
+# RULES #
+#########
+
+.library_build_ci_rule:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master" && $CI_COMMIT_MESSAGE =~ /chore/ || $CI_COMMIT_MESSAGE =~ /ci-patch/ || $CI_COMMIT_MESSAGE =~ /ci-minor/ || $CI_COMMIT_MESSAGE =~ /ci-major/'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "master"'
+    - when: never
+
+.npm_patch_ci_rule:
+  rules:
+    - if: '$CI_COMMIT_BRANCH== "master" && $CI_COMMIT_MESSAGE =~ /ci-patch/'
+    - when: never
+
+.npm_minor_ci_rule:
+  rules:
+    - if: '$CI_COMMIT_BRANCH== "master" && $CI_COMMIT_MESSAGE =~ /ci-minor/'
+    - when: never
+
+.npm_major_ci_rule:
+  rules:
+    - if: '$CI_COMMIT_BRANCH== "master" && $CI_COMMIT_MESSAGE =~ /ci-major/'
+    - when: never
+
+###########
+# SCRIPTS #
+###########
+
+.check-version: &check-version
+  - cat $CI_PROJECT_DIR/version
+
+.login-to-docker-registry: &login-to-docker-registry
+  - echo $REGISTRY_TOKEN | docker login -u $REGISTRY_LOGIN $DOCKER_REGISTRY_URL --password-stdin
+
+.create-docker-build-and-config-files: &create-docker-build-and-config-files
+  - |
+    cat << EOT > "$CI_PROJECT_DIR/.dockerignore"
+    node_modules/
+    dist/
+    .git
+    .gitignore
+    EOT
+  - |
+    cat << EOT > "$CI_PROJECT_DIR/Dockerfile"
+    FROM $DOCKER_IMAGE_NGINX_ALPINE AS base
+    WORKDIR /usr/share/nginx/html
+    RUN rm -rf ./*
+    COPY default.conf /etc/nginx/conf.d/default.conf
+    EXPOSE 80
+    #
+    FROM $DOCKER_IMAGE_NODE_LTS_ALPINE AS builder
+    WORKDIR /src
+    COPY package.json ./
+    RUN yarn install
+    COPY . ./
+    RUN yarn add -D -W @storybook/cli@6.3.4
+    RUN yarn build
+    #
+    FROM base AS final
+    WORKDIR /usr/share/nginx/html
+    COPY --from=builder /src/docs/dist .
+    EOT
+
+.build-docker-image: &build-docker-image
+  - docker build . -t $DOCKER_REGISTRY_URL/$CI_PROJECT_PATH/$NPM_PROJECT_DOCKER_IMAGE_NAME:$(cat version | awk '{print substr($0,2)}' )
+
+.push-docker-image-to-dregistry: &push-docker-image-to-dregistry
+  - docker push $CI_SERVER_HOST:5050/$CI_PROJECT_PATH/$NPM_PROJECT_DOCKER_IMAGE_NAME:$(cat $CI_PROJECT_DIR/version | awk '{print substr($0,2)}' )
+
+.delete-docker-image-on-gitlab-runner: &delete-docker-image-on-gitlab-runner
+  - docker rmi $CI_SERVER_HOST:5050/$CI_PROJECT_PATH/$NPM_PROJECT_DOCKER_IMAGE_NAME:$(cat $CI_PROJECT_DIR/version | awk '{print substr($0,2)}' )
+
+.setup-private-ssh-key: &setup-private-ssh-key
+  - echo "$REGISTRY_PEM" >> /usr/local/share/ca-certificates/$CI_SERVER_HOST.pem
+  - mkdir -p /root/.ssh; chmod 700 /root/.ssh
+  - echo "$CI_USER_ID_RSA" >> /root/.ssh/id_rsa; chmod 600 /root/.ssh/id_rsa
+  - ssh-keyscan -H $CI_SERVER_HOST >> /root/.ssh/known_hosts
+
+.setup-npmrc-config-file: &setup-npmrc-config-file
+  - |
+    cat << EOT > "$CI_PROJECT_DIR/.npmrc"
+    cafile=/usr/local/share/ca-certificates/$CI_SERVER_HOST.pem
+    @npm:registry=https://$CI_SERVER_HOST/api/v4/npm/
+    //$CI_SERVER_HOST/api/v4/packages/npm/:_authToken=${CI_JOB_TOKEN}
+    //$CI_SERVER_HOST/api/v4/projects/$CI_PROJECT_ID/packages/npm/:_authToken=${CI_JOB_TOKEN}
+    unsafe-perm = true
+    scripts-prepend-node-path=true
+    EOT
+  - mv $CI_PROJECT_DIR/.npmrc /root/; cd /
+
+.setup-global-git-config: &setup-global-git-config
+  - git config --global user.email "$CI_USER_EMAIL"
+  - git config --global user.name "$CI_USER_LOGIN"
+  - git config --global url.ssh://git@$CI_SERVER_HOST/.insteadOf $CI_SERVER_URL
+
+.setup-build-folder-and-clone-npm-package-project: &setup-build-folder-and-clone-npm-package-project
+  - mkdir /app
+  - git clone git@$CI_SERVER_HOST:$CI_PROJECT_PATH.git /app
+  - cd /app
+  - yarn config set "strict-ssl" false -g
+  - yarn install --frozen-lockfile
+
+########
+# JOBS #
+########
+
+build-and-push-npm-project-library:
+  image: $DOCKER_IMAGE_DIND
+  stage: build
+  tags:
+    - build
+  needs:
+    - job: prepare-version-file-for-npm-project-library
+      optional: true
+  rules:
+    - !reference [ .library_build_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    NPM_PROJECT_DOCKER_IMAGE_NAME: "npm-project-library"
+  script:
+    - *check-version
+    - *login-to-docker-registry
+    - *create-docker-build-and-config-files
+    - *login-to-docker-registry
+    - *build-docker-image
+    - *push-docker-image-to-dregistry
+    - *delete-docker-image-on-gitlab-runner
+
+publish-patch-npm-package:
+  image: $DOCKER_IMAGE_NODE_BULLSEYE
+  stage: build
+  tags:
+    - build
+  rules:
+    - !reference [ .npm_patch_ci_rule, rules ]
+  script:
+    - *setup-private-ssh-key
+    - *setup-npmrc-config-file
+    - *setup-global-git-config
+    - *setup-build-folder-and-clone-npm-package-project
+    - yarn publish:patch
+
+publish-minor-npm-package:
+  image: $DOCKER_IMAGE_NODE_BULLSEYE
+  stage: build
+  tags:
+    - build
+  rules:
+    - !reference [ .npm_minor_ci_rule, rules ]
+  script:
+    - *setup-private-ssh-key
+    - *setup-npmrc-config-file
+    - *setup-global-git-config
+    - *setup-build-folder-and-clone-npm-package-project
+    - yarn publish:minor
+
+publish-major-npm-package:
+  image: $DOCKER_IMAGE_NODE_BULLSEYE
+  stage: build
+  tags:
+    - build
+  rules:
+    - !reference [ .npm_major_ci_rule, rules ]
+  script:
+    - *setup-private-ssh-key
+    - *setup-npmrc-config-file
+    - *setup-global-git-config
+    - *setup-build-folder-and-clone-npm-package-project
+    - yarn publish:major

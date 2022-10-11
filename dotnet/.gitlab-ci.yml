@@ -1,0 +1,16 @@
+stages:
+  - prepare
+  - unit-testing
+  - build
+  - e2e-testing
+  - cleanup
+  - "deploy to"
+  - restore
+  
+include:
+  - local: .gitlab/ci/*.yml
+  - project: 'group/sub-project/ci-templates'
+    ref: main
+    file:
+      - '.gitlab/ci/dotnet/e2e-testing.yml'
+      - '.gitlab/ci/dotnet/deploy.yml'

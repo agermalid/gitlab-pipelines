@@ -1,0 +1,170 @@
+#########
+# RULES #
+#########
+
+.qa_build_ci_rule:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
+    - when: never
+
+.main_build_ci_rule:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $SCHEDULED_TASK_NAME == "deploy_main_at_2_am"'
+    - when: never
+
+###########
+# SCRIPTS #
+###########
+
+.check-version: &check-version
+  - cat version
+
+.login-to-docker-registry: &login-to-docker-registry
+  - echo $REGISTRY_TOKEN | docker login -u $REGISTRY_LOGIN $DOCKER_REGISTRY_URL --password-stdin
+
+.create-nuget-config: &create-nuget-config
+  - |
+    cat << EOT > "$CI_PROJECT_DIR/NuGet.Config" 
+    <?xml version="1.0" encoding="utf-8"?>
+    <configuration>
+      <packageSources>
+        <clear />
+        <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
+        <add key="$CI_SERVER_HOST" value="$CI_SERVER_URL/api/v4/projects/$CI_PROJECT_ID/packages/nuget/index.json" />
+      </packageSources>
+      <packageSourceCredentials>
+        <$CI_SERVER_HOST>
+          <add key="Username" value="$REGISTRY_LOGIN" />
+          <add key="cleartextpassword" value="$REGISTRY_TOKEN" />
+        </$CI_SERVER_HOST>
+      </packageSourceCredentials>
+    </configuration>
+    EOT
+
+.main-build-push-delete-docker-image: &main-build-push-delete-docker-image
+    - echo "BUILD_CONFIGURATION=$CONFIGURATION"
+    - >
+      docker build
+      -f $CI_PROJECT_DIR/dotnet/Dockerfile
+      -t $CI_SERVER_HOST:5050/$CI_PROJECT_PATH/$DOTNET_PROJECT_DOCKER_IMAGE_NAME:$(cat version)
+      --build-arg BUILD_CONFIGURATION=$CONFIGURATION
+      --build-arg PRODUCT_VERSION=$(cat version | awk '{print substr($0,2)}')
+      --build-arg FILE_VERSION=$(cat version | sed 's/-[^-]*$//' | cut -c 2- | sed 's/-/./' | sed 's/pre-//')
+      .
+    - docker push $CI_SERVER_HOST:5050/$CI_PROJECT_PATH/$DOTNET_PROJECT_DOCKER_IMAGE_NAME:$(cat version)
+    - docker rmi $CI_SERVER_HOST:5050/$CI_PROJECT_PATH/$DOTNET_PROJECT_DOCKER_IMAGE_NAME:$(cat version)
+
+.temp-build-push-delete-docker-image: &temp-build-push-delete-docker-image
+  - echo "BUILD_CONFIGURATION=$CONFIGURATION"
+  - >
+    docker build
+    -f $CI_PROJECT_DIR/dotnet/Dockerfile
+    -t $CI_SERVER_HOST:5050/$CI_PROJECT_PATH/$DOTNET_PROJECT_DOCKER_IMAGE_NAME:latest
+    --build-arg BUILD_CONFIGURATION=$CONFIGURATION
+    --build-arg PRODUCT_VERSION=$(cat version | awk '{print substr($0,2)}')
+    --build-arg FILE_VERSION=$(cat version | sed 's/-[^-]*$//' | cut -c 2- | sed 's/-/./' | sed 's/pre-//')
+    .
+  - docker push $CI_SERVER_HOST:5050/$CI_PROJECT_PATH/$DOTNET_PROJECT_DOCKER_IMAGE_NAME:latest
+  - docker rmi $CI_SERVER_HOST:5050/$CI_PROJECT_PATH/$DOTNET_PROJECT_DOCKER_IMAGE_NAME:latest
+
+########
+# JOBS #
+########
+
+building-dotnet-qa:
+  image: $DOCKER_IMAGE_DIND
+  stage: build
+  tags:
+    - build
+  needs:
+    - job: unit-testing-dotnet-qa
+      optional: false
+  rules:
+    - !reference [ .qa_build_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    CONFIGURATION: Debug
+    DOTNET_PROJECT_DOCKER_IMAGE_NAME: dotnet-qa-stands
+  script:
+    - *check-version
+    - *login-to-docker-registry
+    - *create-nuget-config
+    - *main-build-push-delete-docker-image
+
+building-dotnet-main:
+  image: $DOCKER_IMAGE_DIND
+  stage: build
+  tags:
+    - build
+  needs:
+    - job: unit-testing-dotnet-main
+      optional: false
+  rules:
+    - !reference [ .main_build_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    CONFIGURATION: ReleaseByLinks
+    DOTNET_PROJECT_DOCKER_IMAGE_NAME: dotnet-production-server
+  script:
+    - *check-version
+    - *login-to-docker-registry
+    - *create-nuget-config
+    - *main-build-push-delete-docker-image
+
+building-dotnet-qa-temporary-server:
+  image: $DOCKER_IMAGE_DIND
+  stage: build
+  tags:
+    - build
+  needs:
+    - job: "unit-testing-dotnet-qa"
+      optional: false
+  rules:
+    - !reference [ .qa_build_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    CONFIGURATION: ReleaseByLinks
+    DOTNET_PROJECT_DOCKER_IMAGE_NAME: dotnet-qa-temporary-server
+  script:
+    - *check-version
+    - *login-to-docker-registry
+    - *create-nuget-config
+    # create Dockerfile for dotnet-qa-temporary-server
+    - rm -rf $CI_PROJECT_DIR/dotnet/Dockerfile
+    - cp $TEMPORARY_SERVER_DOCKERFILE $CI_PROJECT_DIR/dotnet/Dockerfile
+    - *main-build-push-delete-docker-image
+
+building-dotnet-main-temporary-server:
+  image: $DOCKER_IMAGE_DIND
+  stage: build
+  tags:
+    - build
+  needs:
+    - job: "unit-testing-dotnet-main"
+      optional: false
+  rules:
+    - !reference [ .main_build_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    CONFIGURATION: ReleaseByLinks
+    DOTNET_PROJECT_DOCKER_IMAGE_NAME: dotnet-main-temporary-server
+  script:
+    - *check-version
+    - *login-to-docker-registry
+    - *create-nuget-config
+    # create Dockerfile for dotnet-main-temporary-server
+    - rm -rf $CI_PROJECT_DIR/dotnet/Dockerfile
+    - cp $TEMPORARY_SERVER_DOCKERFILE $CI_PROJECT_DIR/dotnet/Dockerfile
+    - *temp-build-push-delete-docker-image

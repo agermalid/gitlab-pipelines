@@ -1,0 +1,10 @@
+stages:
+  - prepare
+  - build
+  - deploy
+  
+include:
+  - local: .gitlab/ci/*.yml
+  - project: 'group/sub-project/ci-templates'
+    ref: main
+    file: '.gitlab/ci/npm/deploy.yml'

@@ -1,0 +1,15 @@
+stages:
+  - prepare
+  - build
+  - e2e-testing
+  - cleanup
+  - "deploy to"
+  - restore
+    
+include:
+  - local: .gitlab/ci/*.yml
+  - project: 'group/sub-project/ci-templates'
+    ref: main
+    file:
+      - '.gitlab/ci/nodejs/e2e-testing.yml'
+      - '.gitlab/ci/nodejs/deploy.yml'
