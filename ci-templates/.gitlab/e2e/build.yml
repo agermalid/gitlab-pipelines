@@ -1,0 +1,62 @@
+#########
+# RULES #
+#########
+
+.build_ci_rule:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+    - when: never
+
+###########
+# SCRIPTS #
+###########
+
+.login-to-docker-registry: &login-to-docker-registry
+    - echo $REGISTRY_TOKEN | docker login -u $REGISTRY_LOGIN $DOCKER_REGISTRY_URL --password-stdin
+ 
+.temp-build-push-delete-docker-image: &temp-build-push-delete-docker-image
+    - >
+      docker build
+      -f $CI_PROJECT_DIR/$APPLICATION_SERVER_DOCKER_IMAGE_NAME/Dockerfile
+      -t $CI_SERVER_HOST:5050/$CI_PROJECT_PATH/$APPLICATION_SERVER_DOCKER_IMAGE_NAME:$APPLICATION_SERVER_DOCKER_IMAGE_VERSION
+      .
+    - docker push $CI_SERVER_HOST:5050/$CI_PROJECT_PATH/$APPLICATION_SERVER_DOCKER_IMAGE_NAME:$APPLICATION_SERVER_DOCKER_IMAGE_VERSION
+    - docker rmi $CI_SERVER_HOST:5050/$CI_PROJECT_PATH/$APPLICATION_SERVER_DOCKER_IMAGE_NAME:$APPLICATION_SERVER_DOCKER_IMAGE_VERSION
+
+########
+# JOBS #
+########
+
+building-application-server-traefik-temp:
+  image: $DOCKER_IMAGE_DIND
+  stage: build
+  tags:
+    - build
+  rules:
+    - !reference [ .build_ci_rule, rules ]
+  variables:
+    APPLICATION_SERVER_DOCKER_IMAGE_NAME: "application-server-traefik-temp"
+    APPLICATION_SERVER_DOCKER_IMAGE_VERSION: "2.8.3"
+    APPLICATION_SERVER_SSL_CRT: "$SSL_CRT"
+    APPLICATION_SERVER_SSL_KEY: "$SSL_KEY"
+  script:
+    # create certs
+    - echo "$APPLICATION_SERVER_SSL_CRT" > $CI_PROJECT_DIR/$APPLICATION_SERVER_DOCKER_IMAGE_NAME/ssl.crt
+    - echo "$APPLICATION_SERVER_SSL_KEY" > $CI_PROJECT_DIR/$APPLICATION_SERVER_DOCKER_IMAGE_NAME/ssl.key
+    - *login-to-docker-registry
+    - *temp-build-push-delete-docker-image
+
+building-application-server-postgres-temp:
+  image: $DOCKER_IMAGE_DIND
+  stage: build
+  tags:
+    - build
+  rules:
+    - !reference [ .build_ci_rule, rules ]
+  variables:
+    APPLICATION_SERVER_DOCKER_IMAGE_NAME: "application-server-postgres-temp"
+    APPLICATION_SERVER_DOCKER_IMAGE_VERSION: "14.5-bullseye"
+  script:
+    - *login-to-docker-registry
+    - *temp-build-push-delete-docker-image

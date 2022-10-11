@@ -1,0 +1,33 @@
+global:
+  sendAnonymousUsage: false
+
+api:
+  dashboard: true
+
+entryPoints:
+  http:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: "https"
+          scheme: "https"
+  https:
+    address: ":443"
+  db:
+    address: ":5432"
+  chromedriver:
+    address: ":4444"
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+  file:
+    directory: "/etc/traefik/configfiles"
+    watch: true
+
+ping: {}
+
+log:
+  level: "ERROR"

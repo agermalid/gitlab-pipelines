@@ -1,0 +1,139 @@
+#########
+# RULES #
+#########
+
+.qa_e2e_testing_ci_rule:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
+    - when: never
+
+.main_e2e_testing_ci_rule:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $SCHEDULED_TASK_NAME == "deploy_main_at_2_am"'
+    - when: never
+
+###########
+# SCRIPTS #
+###########
+
+.login-to-docker-registry: &login-to-docker-registry
+  - echo $REGISTRY_TOKEN | docker login -u $REGISTRY_LOGIN $DOCKER_REGISTRY_URL --password-stdin
+ 
+.prepare-qa-temp-stand: &prepare-qa-temp-stand
+  - sed -i "s/GITLAB_RUNNER_IP/$CI_RUNNER_DESCRIPTION/g" $CI_PROJECT_DIR/docker-compose.yml
+  - sed -i "s/main-temp:latest/qa-temp:$(cat version)/g" $CI_PROJECT_DIR/docker-compose.yml
+
+.prepare-main-temp-stand: &prepare-main-temp-stand
+  - sed -i "s/GITLAB_RUNNER_IP/$CI_RUNNER_DESCRIPTION/g" $CI_PROJECT_DIR/docker-compose.yml
+
+.up-temp-stand: &up-temp-stand
+  - docker-compose up -d
+  - docker-compose stop sso-account sso-admin sso-admin-api dotnet-temp nodejs-temp
+  - docker exec postgresql-server bash /prepare-postgresql-temp.sh
+  - docker-compose up -d
+  - docker pull $CI_SERVER_HOST:5050/group/python/python-project/python-project-git:latest
+
+.e2e-test-script: &e2e-test-script
+  - |
+    docker run \
+    --rm \
+    --network=temp_net \
+    -v /home/$CI_USER/.ssh/:/.ssh/ \
+    --env DOCKER_E2E_SCRIPT=$E2E_SCRIPT \
+    $CI_SERVER_HOST:5050/group/python/python-project/python-project-git:latest \
+    bash -c 'cp /.ssh/$CI_SERVER_HOST.pem /usr/local/share/ca-certificates/; \
+    cp -r /.ssh/ /root/.ssh/; \
+    chmod 700 /root/.ssh; \
+    chmod 600 /root/.ssh/id_ed25519; \
+    git config --global user.email "$CI_USER@company.com"; \
+    git config --global user.name "$CI_USER"; \
+    git config --global url.ssh://git@$CI_SERVER_HOST/.insteadOf https://$CI_SERVER_HOST; \
+    mkdir /app; \
+    git clone git@$CI_SERVER_HOST:group/python/python-project.git /app; \
+    pytest -s -v --branch_url=https://nodejs-temp.company.com/ /app/e2e/$DOCKER_E2E_SCRIPT'
+
+.cleanup-after-e2e-testing: &cleanup-after-e2e-testing
+  - docker container rm -f sso-account sso-admin sso-admin-api dotnet-temp nodejs-temp chromedriver postgresql-server traefik
+  - docker volume rm -f ${PWD##*/}_postgresql_data
+
+######################
+# JOBS FOR QA STANDS #
+######################
+
+cleanup-after-e2e-testing-qa-temp:
+  image: $DOCKER_IMAGE_DIND
+  stage: cleanup
+  tags:
+    - e2e-testing
+  needs:
+    - job: authorization-test-qa-temp
+      optional: true
+  when: on_failure
+  rules:
+    - !reference [ .qa_e2e_testing_ci_rule, rules ]
+  script:
+    - *cleanup-after-e2e-testing
+
+authorization-test-qa-temp:
+  image: $DOCKER_IMAGE_DIND
+  stage: e2e-testing
+  tags:
+    - e2e-testing
+  needs:
+    - job: building-dotnet-qa-temp
+      optional: false
+  rules:
+    - !reference [ .qa_e2e_testing_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    E2E_SCRIPT: "source/test_attemp.py"
+  script:
+    - *cleanup-after-e2e-testing
+    - *login-to-docker-registry
+    - cp $TEMPORARY_SERVER_COMPOSE $CI_PROJECT_DIR/docker-compose.yml
+    - *prepare-qa-temp-stand
+    - *up-temp-stand
+    - *e2e-test-script
+    - *cleanup-after-e2e-testing
+
+##############################
+# JOBS FOR PRODUCTION STANDS #
+##############################
+
+cleanup-after-e2e-testing-main-temp:
+  image: $DOCKER_IMAGE_DIND
+  stage: cleanup
+  tags:
+    - e2e-testing
+  needs:
+    - job: authorization-test-main-temp
+      optional: true
+  when: on_failure
+  rules:
+    - !reference [ .main_e2e_testing_ci_rule, rules ]
+  script:
+    - *cleanup-after-e2e-testing
+
+authorization-test-main-temp:
+  image: $DOCKER_IMAGE_DIND
+  stage: e2e-testing
+  tags:
+    - e2e-testing
+  needs:
+    - job: building-dotnet-main-temp
+      optional: false
+  rules:
+    - !reference [ .main_e2e_testing_ci_rule, rules ]
+  variables:
+    E2E_SCRIPT: "source/test_attemp.py"
+  script:
+    - *cleanup-after-e2e-testing
+    - *login-to-docker-registry
+    - cp $TEMPORARY_SERVER_COMPOSE $CI_PROJECT_DIR/docker-compose.yml
+    - *prepare-main-temp-stand
+    - *up-temp-stand
+    - *e2e-test-script
+    - *cleanup-after-e2e-testing

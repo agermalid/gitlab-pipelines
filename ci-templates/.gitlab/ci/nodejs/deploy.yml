@@ -1,0 +1,370 @@
+#########
+# RULES #
+#########
+
+.qa_deploy_ci_rule:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
+      when: manual
+    - when: never
+
+.qa_restore_ci_rule:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
+      when: manual
+    - when: never
+
+.main_deploy_ci_rule:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $SCHEDULED_TASK_NAME == "deploy_main_at_2_am"'
+    - when: never
+
+###########
+# SCRIPTS #
+###########
+
+.check-version: &check-version
+  - cat version
+
+.prepare-ssh-client-for-connections-to-application-server: &prepare-ssh-client-for-connections-to-application-server
+  - mkdir -p $HOME/.ssh; chmod 700 $HOME/.ssh; echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > $HOME/.ssh/config; echo "$APPLICATION_SERVER_ID_RSA" > $HOME/.ssh/id_rsa; chmod 600 $HOME/.ssh/id_rsa
+
+.add-new-version-of-application-server-docker-image-env-file: &add-new-version-of-application-server-docker-image-env-file
+  - echo "IMAGE_VERSION=$(cat version)" >> .env
+
+.remove-old-application-server-create-new: &remove-old-application-server-create-new
+  - scp -P $APPLICATION_SERVER_SSH_PORT -r remove-old-application-server-docker-images.sh $APPLICATION_SERVER_SSH_LOGIN@$APPLICATION_SERVER_HOSTNAME:$NODEJS_PROJECT_FOLDER
+  - ssh $APPLICATION_SERVER_SSH_LOGIN@$APPLICATION_SERVER_HOSTNAME -p $APPLICATION_SERVER_SSH_PORT "bash $NODEJS_PROJECT_FOLDER/remove-old-application-server-docker-images.sh; exit"
+  - ssh $APPLICATION_SERVER_SSH_LOGIN@$APPLICATION_SERVER_HOSTNAME -p $APPLICATION_SERVER_SSH_PORT "rm -rvf $NODEJS_PROJECT_FOLDER; mkdir -pv $NODEJS_PROJECT_FOLDER; exit"
+
+.copying-pre-prepared-config-files-to-the-application-server: &copying-pre-prepared-config-files-to-the-application-server
+  - scp -P $APPLICATION_SERVER_SSH_PORT -r docker-compose.yml .env version $APPLICATION_SERVER_SSH_LOGIN@$APPLICATION_SERVER_HOSTNAME:$NODEJS_PROJECT_FOLDER
+
+.docker-compose-up-application-server: &docker-compose-up-application-server
+  - ssh $APPLICATION_SERVER_SSH_LOGIN@$APPLICATION_SERVER_HOSTNAME -p $APPLICATION_SERVER_SSH_PORT "echo $REGISTRY_TOKEN | docker login -u $REGISTRY_LOGIN $DOCKER_REGISTRY_URL --password-stdin"
+  - ssh $APPLICATION_SERVER_SSH_LOGIN@$APPLICATION_SERVER_HOSTNAME -p $APPLICATION_SERVER_SSH_PORT "cd $NODEJS_PROJECT_FOLDER; docker-compose --compatibility up -d"
+
+.setup-npmrc-config-file: &setup-npmrc-config-file
+  - |
+    cat << EOT > "$CI_PROJECT_DIR/.npmrc"
+    @npm:registry=https://$CI_SERVER_HOST/api/v4/projects/$NPM_PROJECT_ID/packages/npm/
+    //$CI_SERVER_HOST/api/v4/projects/$NPM_PROJECT_ID/packages/npm/:_authToken=${CI_JOB_TOKEN}
+    always-auth=true
+    EOT
+
+.restore-dotnet-qa-database-from-backup: &restore-dotnet-qa-database-from-backup
+  - scp -P $APPLICATION_SERVER_SSH_PORT -r restore-qa-database-script.sh $APPLICATION_SERVER_SSH_LOGIN@$APPLICATION_SERVER_HOSTNAME:$NODEJS_PROJECT_FOLDER
+  - ssh $APPLICATION_SERVER_SSH_LOGIN@$APPLICATION_SERVER_HOSTNAME -p $APPLICATION_SERVER_SSH_PORT "bash $NODEJS_PROJECT_FOLDER/restore-qa-database-script.sh; exit"
+  - ssh $APPLICATION_SERVER_SSH_LOGIN@$APPLICATION_SERVER_HOSTNAME -p $APPLICATION_SERVER_SSH_PORT "rm -rf $NODEJS_PROJECT_FOLDER/restore-qa-database-script.sh; exit"
+
+########
+# JOBS #
+########
+
+QA01:
+  image: $DOCKER_IMAGE_SSH_CLIENT
+  stage: "deploy to"
+  tags:
+    - deploy
+  needs:
+    - job: building-nodejs-qa01
+      optional: true
+  rules:
+    - !reference [ .qa_deploy_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    NODEJS_PROJECT_FOLDER: "/opt/nodejs/nodejs-qa01"
+    NODEJS_PROJECT_DOCKER_IMAGE_NAME: "nodejs-qa01"
+    APPLICATION_SERVER_ID_RSA: "$CI_USER_ID_RSA"
+    APPLICATION_SERVER_SSH_LOGIN: "$SSH_LOGIN"
+    APPLICATION_SERVER_HOSTNAME: "application-server.company.com"
+    APPLICATION_SERVER_SSH_PORT: "22"
+  script:
+    - *check-version
+    - *prepare-ssh-client-for-connections-to-application-server
+    # create docker-compose file
+    - cp $QA01_COMPOSE docker-compose.yml
+    # create variables
+    - cp $QA01_ENV .env
+    - *add-new-version-of-application-server-docker-image-env-file
+    # create docker rmi script
+    - cp $QA01_RMI remove-old-application-server-docker-images.sh
+    - *remove-old-application-server-create-new
+    - *copying-pre-prepared-config-files-to-the-application-server
+    - *docker-compose-up-application-server
+
+QA02:
+  image: $DOCKER_IMAGE_SSH_CLIENT
+  stage: "deploy to"
+  tags:
+    - deploy
+  needs:
+    - job: building-nodejs-qa02
+      optional: true
+  rules:
+    - !reference [ .qa_deploy_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    NODEJS_PROJECT_FOLDER: "/opt/nodejs/nodejs-qa02"
+    NODEJS_PROJECT_DOCKER_IMAGE_NAME: "nodejs-qa02"
+    APPLICATION_SERVER_ID_RSA: "$CI_USER_ID_RSA"
+    APPLICATION_SERVER_SSH_LOGIN: "$SSH_LOGIN"
+    APPLICATION_SERVER_HOSTNAME: "application-server.company.com"
+    APPLICATION_SERVER_SSH_PORT: "22"
+  script:
+    - *check-version
+    - *prepare-ssh-client-for-connections-to-application-server
+    # create docker-compose file
+    - cp $QA02_COMPOSE docker-compose.yml
+    # create variables
+    - cp $QA02_ENV .env
+    - *add-new-version-of-application-server-docker-image-env-file
+    # create docker rmi script
+    - cp $QA02_RMI remove-old-application-server-docker-images.sh
+    - *remove-old-application-server-create-new
+    - *copying-pre-prepared-config-files-to-the-application-server
+    - *docker-compose-up-application-server
+
+QA03:
+  image: $DOCKER_IMAGE_SSH_CLIENT
+  stage: "deploy to"
+  tags:
+    - deploy
+  needs:
+    - job: building-nodejs-qa03
+      optional: true
+  rules:
+    - !reference [ .qa_deploy_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    NODEJS_PROJECT_FOLDER: "/opt/nodejs/nodejs-qa03"
+    NODEJS_PROJECT_DOCKER_IMAGE_NAME: "nodejs-qa03"
+    APPLICATION_SERVER_ID_RSA: "$CI_USER_ID_RSA"
+    APPLICATION_SERVER_SSH_LOGIN: "$SSH_LOGIN"
+    APPLICATION_SERVER_HOSTNAME: "application-server.company.com"
+    APPLICATION_SERVER_SSH_PORT: "22"
+  script:
+    - *check-version
+    - *prepare-ssh-client-for-connections-to-application-server
+    # create docker-compose file
+    - cp $QA03_COMPOSE docker-compose.yml
+    # create variables
+    - cp $QA03_ENV .env
+    - *add-new-version-of-application-server-docker-image-env-file
+    # create docker rmi script
+    - cp $QA03_RMI remove-old-application-server-docker-images.sh
+    - *remove-old-application-server-create-new
+    - *copying-pre-prepared-config-files-to-the-application-server
+    - *docker-compose-up-application-server
+
+restore-database-dotnet-qa01:
+  image: $DOCKER_IMAGE_SSH_CLIENT
+  stage: "restore"
+  tags:
+    - restore
+  needs:
+    - job: QA01
+      optional: false
+  rules:
+    - !reference [ .qa_restore_ci_rule, rules ]
+  variables:
+    APPLICATION_SERVER_HOSTNAME: "application-server.company.com"
+    NODEJS_PROJECT_FOLDER: "/opt/nodejs/nodejs-qa01"
+    APPLICATION_SERVER_ID_RSA: "$CI_USER_ID_RSA"
+    APPLICATION_SERVER_SSH_LOGIN: "$SSH_LOGIN"
+    APPLICATION_SERVER_SSH_PORT: "22"
+  script:
+    - *prepare-ssh-client-for-connections-to-application-server
+    - cp $QA01_RESTORE_DB restore-qa-database-script.sh
+    - *restore-dotnet-qa-database-from-backup
+
+restore-database-dotnet-qa02:
+  image: $DOCKER_IMAGE_SSH_CLIENT
+  stage: "restore"
+  tags:
+    - restore
+  needs:
+    - job: QA02
+      optional: false
+  rules:
+    - !reference [ .qa_restore_ci_rule, rules ]
+  variables:
+    APPLICATION_SERVER_HOSTNAME: "application-server.company.com"
+    NODEJS_PROJECT_FOLDER: "/opt/nodejs/nodejs-qa02"
+    APPLICATION_SERVER_ID_RSA: "$CI_USER_ID_RSA"
+    APPLICATION_SERVER_SSH_LOGIN: "$SSH_LOGIN"
+    APPLICATION_SERVER_SSH_PORT: "22"
+  script:
+    - *prepare-ssh-client-for-connections-to-application-server
+    - cp $QA02_RESTORE_DB restore-qa-database-script.sh
+    - *restore-dotnet-qa-database-from-backup
+
+restore-database-dotnet-qa03:
+  image: $DOCKER_IMAGE_SSH_CLIENT
+  stage: "restore"
+  tags:
+    - restore
+  needs:
+    - job: QA03
+      optional: false
+  rules:
+    - !reference [ .qa_restore_ci_rule, rules ]
+  variables:
+    APPLICATION_SERVER_HOSTNAME: "application-server.company.com"
+    NODEJS_PROJECT_FOLDER: "/opt/nodejs/nodejs-qa03"
+    APPLICATION_SERVER_ID_RSA: "$CI_USER_ID_RSA"
+    APPLICATION_SERVER_SSH_LOGIN: "$SSH_LOGIN"
+    APPLICATION_SERVER_SSH_PORT: "22"
+  script:
+    - *prepare-ssh-client-for-connections-to-application-server
+    - cp $QA03_RESTORE_DB restore-qa-database-script.sh
+    - *restore-dotnet-qa-database-from-backup
+
+Demo:
+  image: $DOCKER_IMAGE_SSH_CLIENT
+  stage: "deploy to"
+  tags:
+    - deploy
+  needs:
+    - job: building-nodejs-demo
+      optional: true
+  rules:
+    - !reference [ .main_deploy_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    NODEJS_PROJECT_FOLDER: "/opt/nodejs/nodejs-demo"
+    NODEJS_PROJECT_DOCKER_IMAGE_NAME: "nodejs-demo"
+    APPLICATION_SERVER_ID_RSA: "$CI_USER_ID_RSA"
+    APPLICATION_SERVER_SSH_LOGIN: "$SSH_LOGIN"
+    APPLICATION_SERVER_HOSTNAME: "demo-server.company.com"
+    APPLICATION_SERVER_SSH_PORT: "22"
+  script:
+    - *check-version
+    - *prepare-ssh-client-for-connections-to-application-server
+    # create docker-compose file
+    - cp $DEMO_COMPOSE docker-compose.yml
+    # create variables
+    - cp $DEMO_ENV .env
+    - *add-new-version-of-application-server-docker-image-env-file
+    # create docker rmi script
+    - cp $DEMO_RMI remove-old-application-server-docker-images.sh
+    - *remove-old-application-server-create-new
+    - *copying-pre-prepared-config-files-to-the-application-server
+    - *docker-compose-up-application-server
+
+Trial:
+  image: $DOCKER_IMAGE_SSH_CLIENT
+  stage: "deploy to"
+  tags:
+    - deploy
+  needs:
+    - job: building-nodejs-trial
+      optional: true
+  rules:
+    - !reference [ .main_deploy_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    NODEJS_PROJECT_FOLDER: "/opt/nodejs/nodejs-trial"
+    NODEJS_PROJECT_DOCKER_IMAGE_NAME: "nodejs-trial"
+    APPLICATION_SERVER_ID_RSA: "$CI_USER_ID_RSA"
+    APPLICATION_SERVER_SSH_LOGIN: "$SSH_LOGIN"
+    APPLICATION_SERVER_HOSTNAME: "trial-server.company.com"
+    APPLICATION_SERVER_SSH_PORT: "22"
+  script:
+    - *check-version
+    - *prepare-ssh-client-for-connections-to-application-server
+    # create docker-compose file
+    - cp $TRIAL_SERVER_COMPOSE docker-compose.yml
+    # create variables
+    - cp $TRIAL_SERVER_ENV .env
+    - *add-new-version-of-application-server-docker-image-env-file
+    # create docker rmi script
+    - cp $TRIAL_SERVER_RMI remove-old-application-server-docker-images.sh
+    - *remove-old-application-server-create-new
+    - *copying-pre-prepared-config-files-to-the-application-server
+    - *docker-compose-up-application-server
+
+Production:
+  image: $DOCKER_IMAGE_SSH_CLIENT
+  stage: "deploy to"
+  tags:
+    - deploy
+  needs:
+    - job: building-nodejs-production
+      optional: true
+  rules:
+    - !reference [ .main_deploy_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    NODEJS_PROJECT_FOLDER: "/opt/nodejs/nodejs-production"
+    NODEJS_PROJECT_DOCKER_IMAGE_NAME: "nodejs-production"
+    APPLICATION_SERVER_ID_RSA: "$CI_USER_ID_RSA"
+    APPLICATION_SERVER_SSH_LOGIN: "$SSH_LOGIN"
+    APPLICATION_SERVER_HOSTNAME: "production-server.company.com"
+    APPLICATION_SERVER_SSH_PORT: "22"
+  script:
+    - *check-version
+    - *prepare-ssh-client-for-connections-to-application-server
+    # create docker-compose file
+    - cp $PRODUCTION_SERVER_COMPOSE docker-compose.yml
+    # create variables
+    - cp $PRODUCTION_SERVER_ENV .env
+    - *add-new-version-of-application-server-docker-image-env-file
+    # create docker rmi script
+    - cp $PRODUCTION_SERVER_RMI remove-old-application-server-docker-images.sh
+    - *remove-old-application-server-create-new
+    - *copying-pre-prepared-config-files-to-the-application-server
+    - *docker-compose-up-application-server
+
+Development:
+  image: $DOCKER_IMAGE_SSH_CLIENT
+  stage: "deploy to"
+  tags:
+    - deploy
+  needs:
+    - job: building-nodejs-develop
+      optional: true
+  rules:
+    - !reference [ .main_deploy_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    NODEJS_PROJECT_FOLDER: "/opt/nodejs/nodejs-develop"
+    NODEJS_PROJECT_DOCKER_IMAGE_NAME: "nodejs-develop"
+    APPLICATION_SERVER_ID_RSA: "$CI_USER_ID_RSA"
+    APPLICATION_SERVER_SSH_LOGIN: "$SSH_LOGIN"
+    APPLICATION_SERVER_HOSTNAME: "application-server.company.com"
+    APPLICATION_SERVER_SSH_PORT: "22"
+  script:
+    - *check-version
+    - *prepare-ssh-client-for-connections-to-application-server
+    # create docker-compose file
+    - cp $DEVELOPMENT_SERVER_COMPOSE docker-compose.yml
+    # create variables
+    - cp $DEVELOPMENT_SERVER_ENV .env
+    - *add-new-version-of-application-server-docker-image-env-file
+    # create docker rmi script
+    - cp $DEVELOPMENT_SERVER_RMI remove-old-application-server-docker-images.sh
+    - *remove-old-application-server-create-new
+    - *copying-pre-prepared-config-files-to-the-application-server
+    - *docker-compose-up-application-server

@@ -1,0 +1,69 @@
+#########
+# RULES #
+#########
+
+.library_deploy_ci_rule:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master" && $CI_COMMIT_MESSAGE =~ /chore/ || $CI_COMMIT_MESSAGE =~ /ci-patch/ || $CI_COMMIT_MESSAGE =~ /ci-minor/ || $CI_COMMIT_MESSAGE =~ /ci-major/'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "master"'
+    - when: never
+
+###########
+# SCRIPTS #
+###########
+
+.check-version: &check-version
+  - cat $CI_PROJECT_DIR/version
+
+.prepare-ssh-client-for-connections-to-application-server: &prepare-ssh-client-for-connections-to-application-server
+  - mkdir -p $HOME/.ssh; chmod 700 $HOME/.ssh; echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > $HOME/.ssh/config; echo "$CI_USER_ID_RSA" > $HOME/.ssh/id_rsa; chmod 600 $HOME/.ssh/id_rsa
+
+.add-new-version-of-application-server-docker-image-env-file: &add-new-version-of-application-server-docker-image-env-file
+  - echo "IMAGE_VERSION=$(cat version | awk '{print substr($0,2)}')" >> .env
+
+.remove-old-application-server-service-create-new: &remove-old-application-server-service-create-new
+  - ssh $APPLICATION_SERVER_STAND_SSH_LOGIN@$APPLICATION_SERVER_HOSTNAME "cd $NPM_PROJECT_FOLDER; docker-compose rm -fvs; docker rmi $APPLICATION_SERVER_DOCKER_IMAGE_NAME:$(cat version | awk '{print substr($0,2)}' ); rm -rvf $NPM_PROJECT_FOLDER; mkdir -pv $NPM_PROJECT_FOLDER; exit"
+
+.copying-pre-prepared-config-files-to-the-application-server: &copying-pre-prepared-config-files-to-the-application-server
+  - scp -r docker-compose.yml .env version $APPLICATION_SERVER_STAND_SSH_LOGIN@$APPLICATION_SERVER_HOSTNAME:$NPM_PROJECT_FOLDER
+
+.docker-compose-up-application-server-service: &docker-compose-up-application-server-service
+  - ssh $APPLICATION_SERVER_STAND_SSH_LOGIN@$APPLICATION_SERVER_HOSTNAME "echo $REGISTRY_TOKEN | docker login -u $REGISTRY_LOGIN $DOCKER_REGISTRY_URL --password-stdin"
+  - ssh $APPLICATION_SERVER_STAND_SSH_LOGIN@$APPLICATION_SERVER_HOSTNAME "cd $NPM_PROJECT_FOLDER; docker-compose --compatibility up -d"
+
+########
+# JOBS #
+########
+
+deploy-npm-project-library:
+  image: $DOCKER_IMAGE_SSH_CLIENT
+  stage: deploy
+  tags:
+    - deploy
+  needs: 
+    - job: build-and-push-npm-project-library
+      optional: true
+  rules:
+    - !reference [ .library_deploy_ci_rule, rules ]
+  artifacts:
+    paths:
+      - version
+    expire_in: 12 weeks
+  variables:
+    NPM_PROJECT_FOLDER: "/opt/npm-project/npm-project-library"
+    NPM_PROJECT_DOCKER_IMAGE_NAME: "npm-project-library"
+    CI_USER_ID_RSA: "$CI_USER_ID_RSA"
+    APPLICATION_SERVER_STAND_SSH_LOGIN: "$SSH_LOGIN"
+    APPLICATION_SERVER_HOSTNAME: "application-server.company.com"
+  script:
+    - *check-version
+    - *prepare-ssh-client-for-connections-to-application-server
+    # create docker-compose file
+    - cp $LIBRARY_COMPOSE docker-compose.yml
+    # create variables
+    - cp $LIBRARY_ENV .env
+    - *add-new-version-of-application-server-docker-image-env-file
+    - *remove-old-application-server-service-create-new
+    - *copying-pre-prepared-config-files-to-the-application-server
+    - *docker-compose-up-application-server-service
